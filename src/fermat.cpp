@@ -224,7 +224,7 @@ Fermat::Fermat(int type, InputNum& input, Options& options, Logging& logging, Pr
             _task.reset(new GerbiczCheckExp(input.gb(), n, checks, nullptr, options.StrongL ? options.StrongL.value() : 0));
 
             if (input.c() != 1)
-                _task_tail_simple.reset(new CarefulExp(abs(input.c() - 1)));
+                _task_tail_simple.reset(new CarefulExp(std::abs(input.c() - 1)));
             if (exp != 1)
                 _task_ak_simple.reset(new CarefulExp(std::move(exp)));
         }
@@ -276,7 +276,7 @@ Fermat::Fermat(int type, InputNum& input, Options& options, Logging& logging, Pr
                 _task->_W = options.SlidingWindow.value();
 
             if (input.c() != 1)
-                _task_tail_simple.reset(new CarefulExp(abs(input.c() - 1)));
+                _task_tail_simple.reset(new CarefulExp(std::abs(input.c() - 1)));
             if (exp != 1)
                 _task_ak_simple.reset(new CarefulExp(std::move(exp)));
         }

@@ -41,6 +41,11 @@ int batch_main(int argc, char *argv[])
     std::string batch_name;
     bool stop_error = false;
     bool stop_prime = false;
+    bool stop_composite = false;
+    bool stop_until_prime = false;
+    bool stop_until_composite = false;
+    int stop_after_primes = -1;
+    int stop_after_composites = -1;
 
     Config cnfg;
     cnfg.ignore("-batch")
@@ -97,6 +102,15 @@ int batch_main(int argc, char *argv[])
             .group("on")
                 .check("error", stop_error, true)
                 .check("prime", stop_prime, true)
+                .check("composite", stop_composite, true)
+                .end()
+            .group("until")
+                .check("prime", stop_until_prime, true)
+                .check("composite", stop_until_composite, true)
+                .end()
+            .group("after")
+                .value_number("primes", ' ', stop_after_primes, 1, INT_MAX)
+                .value_number("composites", ' ', stop_after_composites, 1, INT_MAX)
                 .end()
             .end()
         .value_code("-ini", ' ', [&](const char* param) {
@@ -131,7 +145,9 @@ int batch_main(int argc, char *argv[])
         printf("\t-order {<a> | \"K*B^N+C\"}\n");
         printf("\t-factors all\n");
         printf("\t-check [{near | always| never}] [strong [disable] [count <count>]]\n");
-        printf("\t-stop [on error] [on prime]\n");
+        printf("\t-stop [on error] [on prime] [on composite]\n");
+        printf("\t      [until prime] [until composite]\n");
+        printf("\t      [after primes <N>] [after composites <N>]\n");
         return 0;
     }
 
@@ -171,18 +187,15 @@ int batch_main(int argc, char *argv[])
     if (cur > 0)
         logging_batch.info("Restarting at %d.\n", cur + 1);
 
-    int primes = logging_batch.progress().param_int("primes");;
+    int primes = logging_batch.progress().param_int("primes");
+    int composites = logging_batch.progress().param_int("composites");
     bool success = false;
     for (; cur < batch.size(); cur++)
     {
         logging_batch.report_param("cur", cur);
         logging_batch.progress().update(cur/(double)batch.size(), 0);
         logging_batch.progress_save();
-        if (success && stop_prime)
-        {
-            Task::abort();
-            break;
-        }
+
         if (batch_name == "stdin")
         {
             double time = logging_batch.progress().time_total();
@@ -414,9 +427,58 @@ int batch_main(int argc, char *argv[])
         {
             primes++;
             logging_batch.report_param("primes", primes);
+
+            // Check stop conditions for prime
+            if (stop_prime)
+            {
+                logging_batch.info("Stopping: prime found.\n");
+                Task::abort();
+                break;
+            }
+            if (stop_until_prime)
+            {
+                logging_batch.info("Stopping: prime found (until condition met).\n");
+                Task::abort();
+                break;
+            }
+            if (stop_after_primes > 0 && primes >= stop_after_primes)
+            {
+                logging_batch.info("Stopping: %d primes found.\n", primes);
+                Task::abort();
+                break;
+            }
         }
+        else if (!failed)
+        {
+            composites++;
+            logging_batch.report_param("composites", composites);
+
+            // Check stop conditions for composite
+            if (stop_composite)
+            {
+                logging_batch.info("Stopping: composite found.\n");
+                Task::abort();
+                break;
+            }
+            if (stop_until_composite)
+            {
+                logging_batch.info("Stopping: composite found (until condition met).\n");
+                Task::abort();
+                break;
+            }
+            if (stop_after_composites > 0 && composites >= stop_after_composites)
+            {
+                logging_batch.info("Stopping: %d composites found.\n", composites);
+                Task::abort();
+                break;
+            }
+        }
+
         if (failed && stop_error)
+        {
+            logging_batch.info("Stopping: error occurred.\n");
             Task::abort();
+        }
         if (Task::abort_flag())
             break;
     }
@@ -427,7 +489,7 @@ int batch_main(int argc, char *argv[])
     else
     {
         batch_progress.clear();
-        logging_batch.info("Batch of %d, primes: %d, time: %.1f s.\n", cur, primes, logging_batch.progress().time_total());
+        logging_batch.info("Batch of %d, primes: %d, composites: %d, time: %.1f s.\n", cur, primes, composites, logging_batch.progress().time_total());
     }
 
     return 0;

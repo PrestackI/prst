@@ -37,7 +37,7 @@ The main function routes numbers to appropriate tests based on:
 - Factorials/Primorials with C=±1 → PocklingtonGeneric/MorrisonGeneric
 - K*B^N+1 with factors → Pocklington
 - K*B^N-1 with factors → Morrison (includes LLR for K*2^N-1)
-- Default/fallback → Fermat (probabilistic)
+- Default/fallback → Fermat (probabilistic) or Proth (for K*2^N+1)
 
 ### 4. Exponentiation Strategies
 Multiple exponentiation implementations for different use cases:
@@ -51,6 +51,14 @@ Choose based on:
 - Smooth vs. non-smooth exponents
 - Need for intermediate points (proofs)
 - Error checking requirements
+
+### 5. Lucas Arithmetic
+Lucas arithmetic provides an alternative to standard exponentiation for deterministic tests with C=-1:
+- Provides multiplication by an integer for Lucas chain elements (an analogue to exponentiation)
+- Used in deterministic tests with C=-1 (Morrison family)
+- Implements Gerbicz-Li strong error checking for reliability
+- **Performance tradeoff**: Works approximately two times slower than standard exponentiation
+- Despite the performance cost, it's essential for certain primality proofs where the mathematical properties of Lucas sequences are required
 
 ## Coding Conventions
 
@@ -150,8 +158,14 @@ void init_giant(InputNum* input, arithmetic::GWState* gwstate,
 - Implement verification logic in `execute()` loop
 
 ### 3. Checkpointing Strategy
-- Default: write every 30 seconds (`Task::DISK_WRITE_TIME`)
-- Use `commit_execute<StateType>(iteration, ...)` for atomic updates
+- Default: write to disk every 30 seconds (`Task::DISK_WRITE_TIME`)
+- `commit_execute<StateType>(iteration, ...)` provides an opportunity to checkpoint, but checkpoints are made only rarely based on `state_update_period()`
+  - Checkpoints are initially made in-memory; only some are saved to disk depending on `DISK_WRITE_TIME`
+  - Flow: `commit_execute` → `set_state<StateType>`, `on_state` → `write_state`
+  - `commit_execute` is where `abort_flag` is checked (if called rarely, Ctrl-C can be unresponsive)
+  - `set_state` makes an in-memory checkpoint unconditionally
+  - `on_state` is where progress is output to console and BOINC interoperation happens
+  - `write_state` is called only once per `DISK_WRITE_TIME` under normal operation, regardless of how many in-memory checkpoints happen
 - Support resume from any checkpoint
 - Two files: `.ckpt` (main), `.rcpt` (recovery for strong checks)
 
@@ -199,7 +213,7 @@ task->run(...);
 
 **Current Limitations:**
 - Proofs only implemented for Fermat-based tests
-- Morrison test doesn't support proofs (requires Fermat preprocessing)
+- Morrison test doesn't support proofs (requires Fermat preprocessing; can be done but would be two times slower, so it makes no sense to implement)
 - Order computation doesn't support proofs
 
 ## GWnum Library Integration
@@ -229,7 +243,9 @@ arithmetic::GWNum X(gw);
 
 ### Performance Tuning
 - **Thread count**: Generally 1 thread per physical core with L3 cache
-- **Spin threads**: 0 (low CPU), 1 (main only, default), or all (max performance)
+- **Spin threads**: Uses spinlocks instead of OS synchronization primitives
+  - 0 (low CPU), 1 (main only, default), or all (max performance)
+  - Can be detrimental in virtualized environments
 - **CPU instructions**: Auto-detect or force (SSE2, AVX, FMA3, AVX512F)
 - **FFT safety margin**: Default 0.0, increase for stability
 - **Next FFT**: Manually increment with `+<count>` or auto on errors
@@ -247,7 +263,7 @@ arithmetic::GWNum X(gw);
 - Factor validation: all factors must divide N-1 (Pocklington) or N+1 (Morrison)
 
 ### Verification Strategies
-1. **Deterministic tests**: Pocklington, Morrison (with sufficient factors)
+1. **Deterministic tests**: Pocklington, Morrison (with sufficient factors), Proth, LLR (for base 2)
 2. **Probabilistic**: Fermat (requires multiple bases for confidence)
 3. **Independent verification**: Use proof certificates
 

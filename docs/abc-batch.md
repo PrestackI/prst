@@ -1,6 +1,6 @@
 # ABC batch mode — deep dive
 
-`-batch` runs PRST over a *list* of candidates instead of one, driving the same `Run::create → run->run()` machinery once per entry, with a single shared GWnum config, cross-candidate progress/resume, and stop conditions. The list comes from a file (or `stdin`) in one of four shapes: **raw** (one expression per line), **ABC**, **ABCD**, or **ABC2** — the output formats of the common sieves (srsieve2, gcwsieve, mfsieve). Two cleanly separated pieces:
+`-batch` runs PRST over a *list* of candidates instead of one, driving the same `Run::create → run->run()` machinery once per entry, with a single shared GWnum config, cross-candidate progress/resume, and stop conditions. The list comes from a file (or `stdin`) in one of five shapes: **raw** (one expression per line), **ABC**, **ABCD**, **ABC2** — the output formats of the common sieves (srsieve2, gcwsieve, mfsieve) — or **NewPGen** (the classic Paul-Jobling sieve format, as read by LLR). Two cleanly separated pieces:
 
 - `abc_parser.{h,cpp}` — pure parsing: turn a batch file into a `CandidateSource`, an indexable sequence of candidate expression strings. No primality logic.
 - `batch.{h,cpp}` — the driver: `batch_main` parses options, opens the source, and loops, calling the same `InputNum`/`Run` path the single-candidate `main()` uses.
@@ -190,11 +190,26 @@ Each `<var>: …` line (`parse_abc2_var_line`, `:264-394`) is one of:
 
 The candidate count is `∏ |values|`, checked against `MAX_ABC2_CANDIDATES` with a multiply-overflow guard (`:669-685`); `ABC2CandidateSource::get` then maps a flat index to one value per variable via precomputed strides.
 
+**NewPGen** — the classic sieve format LLR reads natively. A colon-delimited header followed by two-column data lines:
+```
+1000000000000:M:1:105:258
+76436 50000
+133194 50000
+```
+→ `76436*105^50000-1`, `133194*105^50000-1`. The header is `<sievelimit>:<char>:<chainlen>:<base>:<mask>` (`detect_format` requires ≥4 colon-fields, so a stray `123:foo` line is not misdetected). PRST tests **one** number per row, so only the two single-test forms are supported:
+
+- `mask` MODE_PLUS (`0x01`) / char `P` → `k*b^n+1` (Proth → Pocklington)
+- `mask` MODE_MINUS (`0x02`) / char `M` → `k*b^n-1` (Riesel → Morrison/LLR)
+
+The form is matched **after stripping the non-form flags** `0x100` ("Mode 'k' sieve", variable-k — set in real files, e.g. mask `258 = 0x100|0x02`) and `0x400` (NOTGENERALISED). Every other form (twin `0x03`, SG/CC, BiTwin, Lucky, AP `0x200`, +5/+7, DUAL `0x8000`, chains, primorial `0x40`) is **warned about and skipped** — a header whose rows are all unsupported yields a clean "no supported candidates" (empty batch), not mis-tested numbers. Multiple header blocks in one file are supported (state resets per block).
+
+Data lines are **`k n` (k-first) by default**, matching standard NewPGen / LLR (`Llr.c:17617`). The `k_value` is the k token (kept as a string — k may exceed 64 bits), so `-stop on primek` tracks the right multiplier. For merge scripts that emit columns reversed as `n k`, pass **`-newpgen nk`**; the same candidates are produced, only which token is treated as k changes. (Note: a file *sorted* by n then k is still `k n` in columns — that is a row order, not a column swap, and needs no flag.)
+
 ## 6. Pitfalls
 
 - **The small-number and `-trial` fast paths bypass the prime/composite accounting.** A candidate with `bitlen() ≤ 40` (`:255`) or a `-trial` factor hit (`:276`) prints its result and `continue`s *before* the `primes`/`composites`/`k_prime_found` bookkeeping (`:334-347`). So those candidates don't increment the composite streak, don't count toward `-stop on composites`, and a small prime won't arm `-stop on kprime`. Surprising if a batch is all small numbers.
 - **`-stop on prime` stops one iteration late, by design.** `success` is checked at the loop top (`:188`), not right after the run, so the prime's result line and checkpoint cleanup complete first. Don't read the abort as "stopped mid-prime."
-- **The abort-based stop conditions exit with `PRST_EXIT_FAILURE` (1), even on success.** `-stop on prime`, `on composites`, and `on error` all call `Task::abort()`; the post-loop check (`:355`) maps a set abort flag (when not stdin) to `progress_save()` + `return PRST_EXIT_FAILURE`. So a *successful* stop-on-prime returns exit 1, not 0 — a script keying off the exit code reads it as failure. Only a batch that runs to natural completion returns `PRST_EXIT_NORMAL` (0). (`-stop on kprime` is the exception: it `continue`s to skip candidates and never aborts, so it doesn't force the failure exit.)
+- **The abort-based stop conditions exit with `PRST_EXIT_FAILURE` (1), even on success.** `-stop on prime`, `on composites`, and `on error` all call `Task::abort()`; the post-loop check (`:355`) maps a set abort flag (when not stdin) to `progress_save()` + `return PRST_EXIT_FAILURE`. So a *successful* stop-on-prime returns exit 1, not 0 — a script keying off the exit code reads it as failure. Only a batch that runs to natural completion returns `PRST_EXIT_NORMAL` (0). (`-stop on primek` / its alias `-stop on kprime` is the exception: it `continue`s to skip candidates and never aborts, so it doesn't force the failure exit.) Note the two are different stops: **`-stop on prime`** halts the *whole batch* on the first prime found (and exits 1), whereas **`-stop on primek`** halts only the *current k* — once a prime is found for some k, later candidates sharing that k are skipped while every other k keeps running, and the batch finishes normally (exit 0). `primek` is the preferred name; `kprime` remains as a back-compat alias.
 - **`-stop on composites` counts *consecutive* composites, not total.** Any prime resets the counter to 0 (`:338`). A batch that alternates prime/composite never trips it.
 - **`detect_format` requires a trailing space.** `"ABC "`, `"ABCD "`, `"ABC2 "` (`:63-72`). A header line `ABC2\t…` (tab, no space) or `ABCD[…]` glued to the bracket falls through to **raw**, where each subsequent line is then mis-parsed as a standalone expression.
 - **Raw is the silent fallback.** `parse_batch_file` never fails on "unknown format" — anything without a recognized `ABC*` header becomes a raw source. A typo'd `ABBC` header means the header line itself becomes candidate #1 (and fails `InputNum::parse`).
@@ -209,6 +224,7 @@ The candidate count is `∏ |values|`, checked against `MAX_ABC2_CANDIDATES` wit
 | ABC | `ABC $a*2^$b+1` | whitespace-delimited value rows | `VectorCandidateSource` | token before `*` |
 | ABCD | `ABCD $a*2^$b+1 [init…]` | per-variable deltas; multiple blocks ok | `VectorCandidateSource` | token before `*` |
 | ABC2 | `ABC2 $a*2^$b+1` | `<var>: in{…}` / `from…to…[step]` / `primes from…to` | `ABC2CandidateSource` (lazy) | token before `*` |
+| NewPGen | `1000000000000:M:1:105:258` | `k n` rows (k-first; `-newpgen nk` to reverse) | `VectorCandidateSource` | the k token |
 
 | You want to… | Where |
 |---|---|
